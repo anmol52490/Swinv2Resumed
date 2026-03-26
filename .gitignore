@@ -1,0 +1,4 @@
+__pycache__
+epochs_50_224_manual_arch
+epochs_50_384
+models_peft
