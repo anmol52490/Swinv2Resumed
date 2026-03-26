@@ -19,12 +19,12 @@ from utils import get_loaders, check_accuracy, save_checkpoint, MetricLogger, Di
 # --- Hyperparameters ---
 LR = 1e-4 # Higher LR because we are training from scratch (Adapters + Decoder)
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-BATCH_SIZE = 48 # SwinV2 + UperNet uses heavy VRAM; reduced to 16.
-TOTAL_EPOCHS = 50
+BATCH_SIZE = 24# SwinV2 + UperNet uses heavy VRAM; reduced to 16.
+TOTAL_EPOCHS = 200
 EVAL_FREQ = 5
 LOSS_SWITCH_EPOCH = int(TOTAL_EPOCHS * 0.85)
-IMG_HEIGHT = 224
-IMG_WIDTH = 224
+IMG_HEIGHT = 384
+IMG_WIDTH = 384
 
 def train_fn(loader, model, optimizer, loss_fn):
     loop = tqdm(loader, leave=False, file=sys.stdout, dynamic_ncols=True)
@@ -40,6 +40,7 @@ def train_fn(loader, model, optimizer, loss_fn):
         loss = loss_fn(predictions, targets)
 
         optimizer.zero_grad()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         # scaler.scale(loss).backward()
         loss.backward()
         optimizer.step()
@@ -73,7 +74,7 @@ def main():
         ToTensorV2(),
     ])
 
-    save_dir = "epochs_50_224_manual_arch"
+    save_dir = "epochs_200_384_manual_arch_class_weights"
     os.makedirs(save_dir, exist_ok=True)
 
     batch_loss_file = os.path.join(save_dir, "batch_losses_peft.csv")
@@ -97,8 +98,15 @@ def main():
     print(f"{(trainable_params1 / total_params) * 100:.2f}% of params are trainable")
     optimizer = optim.AdamW(trainable_params, lr=LR, weight_decay=1e-4)
     # scaler = torch.amp.GradScaler('cuda')
+
+    if os.path.exists("class_weights.pt"):
+        print("=> Loading smoothed Inverse Frequency Class Weights...")
+        class_weights = torch.load("class_weights.pt").to(DEVICE)
+    else:
+        print("=> WARNING: class_weights.pt not found. Using uniform weights.")
+        class_weights = None
     
-    dice_ce_loss = DiceCELoss(num_classes=104)
+    dice_ce_loss = DiceCELoss(num_classes=104, weight=class_weights)
     lovasz_loss = LovaszSoftmaxLoss()
     active_loss_fn = dice_ce_loss
 
@@ -135,7 +143,7 @@ def main():
             if metrics['miou'] > best_miou:
                 best_miou = metrics['miou']
                 checkpoint = {'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict()}
-                save_dir = "epochs_200_224_manual_arch"
+                save_dir = "epochs_200_384_manual_arch_class_weights"
                 model_dir = os.path.join(save_dir, "models")
 
                 os.makedirs(model_dir, exist_ok=True)

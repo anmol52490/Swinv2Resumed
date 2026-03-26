@@ -12,7 +12,7 @@ def save_checkpoint(state, filename='best_model.pth.tar'):
 def load_checkpoint(checkpoint, model):
     model.load_state_dict(checkpoint['state_dict'])
 
-def get_loaders(dataset, batch_size, train_transform, val_transform, num_workers=8, pin_memory=True):
+def get_loaders(dataset, batch_size, train_transform, val_transform, num_workers=12, pin_memory=True):
     train_ds = FoodSegDataset(hf_dataset_split=dataset['train'], transform=train_transform)
     train_loader = DataLoader(train_ds, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, shuffle=True, persistent_workers=True, prefetch_factor=2)
 
@@ -68,7 +68,7 @@ def check_accuracy(loader, model, loss_fn, device='cuda', num_classes=104):
 
 class MetricLogger:
     def __init__(self, main_file="training_metrics_peft200.csv", class_file="per_class_iou_peft200.csv", num_classes=104):
-        save_dir = "epochs_50_224_manual_arch"
+        save_dir = "epochs_200_384_manual_arch_class_weights"
         os.makedirs(save_dir, exist_ok=True)
         self.main_file = os.path.join(save_dir, main_file)
         self.class_file = os.path.join(save_dir, class_file)
