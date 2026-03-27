@@ -1,7 +1,9 @@
 __pycache__
-epochs_50_224_manual_arch
-epochs_50_384
+# epochs_50_224_manual_arch
+# epochs_50_384
 models_peft
-epochs_200_384_manual_arch_class_weights
-epochs_50_384_manual_arch_class_weights
+models
+# epochs_200_384_manual_arch_class_weights
+# epochs_50_384_manual_arch_class_weights
 *.pt
+*.pth.tar

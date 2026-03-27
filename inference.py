@@ -55,7 +55,7 @@ def visualize_prediction(model, dataset_split, image_index, val_transform, devic
 if __name__ == "__main__":
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # checkpoint_path = r"epochs_50_224_manual_arch/models/39.62MIOU_0.34Loss_79.68pixAcc_51.79mAcc_model.pth.tar"
-    checkpoint_path= r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_224_manual_arch\models\29.26MIOU_2.33Loss_67.62pixAcc_47.55mAcc_model.pth.tar"
+    checkpoint_path= r"epochs_200_384_manual_arch_class_weights/models/45.07MIOU_0.15Loss_82.31pixAcc_54.76mAcc_model.pth.tar"
     
     val_transform = A.Compose([
         A.Resize(height=256, width=256),
