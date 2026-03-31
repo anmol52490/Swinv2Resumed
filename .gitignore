@@ -7,3 +7,4 @@ models
 # epochs_50_384_manual_arch_class_weights
 *.pt
 *.pth.tar
+torch_compile_issue.txt
