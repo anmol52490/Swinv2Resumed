@@ -23,8 +23,8 @@ BATCH_SIZE = 24# SwinV2 + UperNet uses heavy VRAM; reduced to 16.
 TOTAL_EPOCHS = 200
 EVAL_FREQ = 5
 LOSS_SWITCH_EPOCH = int(TOTAL_EPOCHS * 0.85)
-IMG_HEIGHT = 384
-IMG_WIDTH = 384
+IMG_HEIGHT = 640
+IMG_WIDTH = 640
 
 def train_fn(loader, model, optimizer, loss_fn):
     loop = tqdm(loader, leave=False, file=sys.stdout, dynamic_ncols=True)
@@ -74,7 +74,7 @@ def main():
         ToTensorV2(),
     ])
 
-    save_dir = "epochs_200_384_manual_arch_class_weights"
+    save_dir = "epochs_200_640_improvedFPN"
     os.makedirs(save_dir, exist_ok=True)
 
     batch_loss_file = os.path.join(save_dir, "batch_losses_peft.csv")
@@ -143,7 +143,7 @@ def main():
             if metrics['miou'] > best_miou:
                 best_miou = metrics['miou']
                 checkpoint = {'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict()}
-                save_dir = "epochs_200_384_manual_arch_class_weights"
+                save_dir = "epochs_200_640_improvedFPN"
                 model_dir = os.path.join(save_dir, "models")
 
                 os.makedirs(model_dir, exist_ok=True)

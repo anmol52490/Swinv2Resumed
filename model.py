@@ -1,5 +1,4 @@
 from torchvision import models
-from torchsummary import summary
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,7 +27,7 @@ def weights_init(m):
 class ConvLayer(nn.Module):
     def __init__(self, inputfeatures, outputinter, kernel_size=7, stride=1, padding=3, dilation=1, output=64, layertype=1, droupout=False):
         super(ConvLayer, self).__init__()
-        if droupout == False:
+        if not droupout:
             self.layer1 = nn.Sequential(
                 nn.Conv2d(inputfeatures, outputinter, kernel_size=kernel_size, stride=1, padding=padding, dilation=dilation),
                 nn.BatchNorm2d(outputinter),
@@ -109,52 +108,58 @@ class PSPhead(nn.Module):
         )
 
     def forward(self, x):
-        x = x.permute((0,3,1,2))
         ppm_outs = [x]
         for ppm in self.ppm_modules:
             ppm_out = F.interpolate(ppm(x), size=(x.shape[2], x.shape[3]), mode='bilinear', align_corners=False)
             ppm_outs.append(ppm_out)
+        
         ppm_outs = torch.cat(ppm_outs, dim=1)
-        return self.bottleneck(ppm_outs)
+        x = self.bottleneck(ppm_outs)
+        return x
 
 class FPN_fuse(nn.Module):
-    def __init__(self, feature_channels=[384, 768, 1536, 1536], fpn_out=768):
+    def __init__(self, feature_channels=[192, 384, 768, 1536], fpn_out=192):
         super(FPN_fuse, self).__init__()
-
+        
+        # 1. Lateral convolutions applied to ALL stages to ensure feature adaptation
         self.lateral_convs = nn.ModuleList([
             nn.Conv2d(in_ch, fpn_out, kernel_size=1)
             for in_ch in feature_channels
         ])
 
+        # 2. Smoothing convolutions for aliasing reduction
         self.smooth_convs = nn.ModuleList([
             nn.Conv2d(fpn_out, fpn_out, kernel_size=3, padding=1)
-            for _ in range(len(feature_channels) - 1)
+            for _ in range(len(feature_channels))
         ])
 
+        # 3. Final Fusion bottlenecks concatenated FPN maps back to standard depth
         self.conv_fusion = nn.Sequential(
-            nn.Conv2d(len(feature_channels) * fpn_out, fpn_out*2, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(fpn_out*2),
+            nn.Conv2d(len(feature_channels) * fpn_out, fpn_out, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(fpn_out),
             nn.ReLU(inplace=True)
         )
 
     def forward(self, features):
-        features = [conv(f) for conv, f in zip(self.lateral_convs, features)]
-        P = [features[-1]]
+        # Step 1: Uniform lateral projection
+        lats = [lateral(f) for lateral, f in zip(self.lateral_convs, features)]
 
-        for i in reversed(range(len(features) - 1)):
-            up = F.interpolate(P[-1], size=features[i].shape[2:], mode='bilinear', align_corners=True)
-            fused = up + features[i]
-            fused = self.smooth_convs[i](fused)
-            P.append(fused)
+        # Step 2: Strict Top-Down Summation
+        for i in range(len(lats) - 1, 0, -1):
+            up = F.interpolate(lats[i], size=lats[i-1].shape[2:], mode='bilinear', align_corners=True)
+            lats[i-1] = lats[i-1] + up
 
-        P = list(reversed(P))
-        H, W = P[0].shape[2], P[0].shape[3]
-        P = [P[0]] + [
-            F.interpolate(p, size=(H, W), mode='bilinear', align_corners=True)
-            for p in P[1:]
-        ]
+        # Step 3: Anti-aliasing smoothing
+        ps = [smooth(l) for smooth, l in zip(self.smooth_convs, lats)]
 
-        x = torch.cat(P, dim=1)
+        # Step 4: Multi-Scale Aggregation (Targeting Stage 1 resolution)
+        target_h, target_w = ps[0].shape[2:]
+        fused_ps = [ps[0]]
+        for i in range(1, len(ps)):
+            fused_ps.append(F.interpolate(ps[i], size=(target_h, target_w), mode='bilinear', align_corners=True))
+
+        # Output Channel Flow: 4 * 192 = 768 -> conv_fusion -> 192
+        x = torch.cat(fused_ps, dim=1)
         return self.conv_fusion(x)
 
 class SwinUperNet(nn.Module):
@@ -167,11 +172,13 @@ class SwinUperNet(nn.Module):
         for param in self.backbone.parameters():
             param.requires_grad = False
 
-        self.feature_channels = [384, 768, 1536, 1536]
+        self.feature_channels = [192, 384, 768, 1536]
 
         self.PPMhead = PSPhead(input_dim=1536, output_dims=384, final_output_dims=1536)
-        self.FPN = FPN_fuse(self.feature_channels, fpn_out=768)
-        self.head = ConvLayer(1536, 128, kernel_size=3, stride=1, padding=1, output=64, layertype=3, droupout=True)
+        self.FPN = FPN_fuse(self.feature_channels, fpn_out=192)
+        
+        # Head specifically expects the 192 output from the corrected FPN_fuse
+        self.head = ConvLayer(192, 128, kernel_size=3, stride=1, padding=1, output=64, layertype=3, droupout=True)
         self.ClassifyBlock = ClassifyBlock(64, num_classes)
 
         self.PPMhead.apply(weights_init)
@@ -179,23 +186,39 @@ class SwinUperNet(nn.Module):
         self.head.apply(weights_init)
         self.ClassifyBlock.apply(weights_init)
 
+        self.extracted_features = []
+        self._register_hooks()
+
+    def _register_hooks(self):
+        """Pre-merge hook extraction to guarantee high-res spatial preservation."""
+        def hook_fn(module, input_args, output):
+            hidden_states = output[0]
+            B, L, C = hidden_states.shape
+            
+            if len(input_args) > 1 and isinstance(input_args[1], tuple):
+                H, W = input_args[1]
+            else:
+                H = W = int(np.sqrt(L)) 
+                
+            spatial_tensor = hidden_states.transpose(1, 2).reshape(B, C, H, W)
+            self.extracted_features.append(spatial_tensor)
+
+        for stage in self.backbone.encoder.layers:
+            stage.blocks[-1].register_forward_hook(hook_fn)
+
     def forward(self, x):
         input_size = (x.size()[2], x.size()[3])
+        self.extracted_features.clear()
 
-        outputs = self.backbone(pixel_values=x, output_hidden_states=True)
-        features = list(outputs.hidden_states[1:])
+        _ = self.backbone(pixel_values=x)
+        features = list(self.extracted_features)
 
-        for i in range(len(features)):
-            h = int(np.sqrt(features[i].shape[1]))
-            features[i] = features[i].view(features[i].shape[0], h, h, features[i].shape[2])
-            if i != len(features) - 1:
-                features[i] = features[i].permute(0,3,1,2)
-
+        # Apply global context to Stage 4 before FPN
         features[-1] = self.PPMhead(features[-1])
-
+        
         x = self.FPN(features)
         x = self.head(x)
-        x = F.interpolate(x, size=input_size, mode='bilinear')
+        x = F.interpolate(x, size=input_size, mode='bilinear', align_corners=False)
         x = self.ClassifyBlock(x)
 
         return x
