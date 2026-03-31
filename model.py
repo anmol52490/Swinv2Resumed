@@ -175,10 +175,10 @@ class SwinUperNet(nn.Module):
         self.feature_channels = [192, 384, 768, 1536]
 
         self.PPMhead = PSPhead(input_dim=1536, output_dims=384, final_output_dims=1536)
-        self.FPN = FPN_fuse(self.feature_channels, fpn_out=192)
+        self.FPN = FPN_fuse(self.feature_channels, fpn_out=512)
         
         # Head specifically expects the 192 output from the corrected FPN_fuse
-        self.head = ConvLayer(192, 128, kernel_size=3, stride=1, padding=1, output=64, layertype=3, droupout=True)
+        self.head = ConvLayer(512, 128, kernel_size=3, stride=1, padding=1, output=64, layertype=3, droupout=True)
         self.ClassifyBlock = ClassifyBlock(64, num_classes)
 
         self.PPMhead.apply(weights_init)
