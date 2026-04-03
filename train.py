@@ -98,6 +98,29 @@ def main():
     print(f"{(trainable_params1 / total_params) * 100:.2f}% of params are trainable")
     optimizer = optim.AdamW(trainable_params, lr=LR, weight_decay=1e-4)
     # scaler = torch.amp.GradScaler('cuda')
+    RESUME_CHECKPOINT = r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_640_improvedFPN\models\45.11MIOU_1.02Loss_80.93pixAcc_58.21mAcc_model.pth.tar"
+    START_EPOCH = 1
+    best_miou = 0.0
+
+    if os.path.isfile(RESUME_CHECKPOINT):
+        print(f"=> Loading checkpoint '{RESUME_CHECKPOINT}'")
+        checkpoint = torch.load(RESUME_CHECKPOINT, map_location=DEVICE)
+        
+        # Load weights and optimizer
+        model.load_state_dict(checkpoint['state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        
+        # Programmatically set the start epoch. 
+        # (Uses 105 as a fallback if you load an older checkpoint that lacked the 'epoch' key)
+        saved_epoch = checkpoint.get('epoch', 105)
+        START_EPOCH = saved_epoch + 1
+        
+        # Programmatically set best_miou to fix the overwrite flaw
+        best_miou = checkpoint.get('best_miou', 45.11)
+        
+        print(f"=> Loaded checkpoint. Resuming from epoch {START_EPOCH} with previous best mIoU: {best_miou:.2f}")
+    else:
+        print(f"=> No checkpoint found at '{RESUME_CHECKPOINT}'. Starting from scratch.")
 
     if os.path.exists("class_weights.pt"):
         print("=> Loading smoothed Inverse Frequency Class Weights...")
@@ -114,11 +137,18 @@ def main():
     train_loader, val_loader = get_loaders(dataset, BATCH_SIZE, train_transform, val_transform)
 
     logger = MetricLogger(main_file="metrics_peft200.csv", class_file="iou_peft200.csv")
-    best_miou = 0.0
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=TOTAL_EPOCHS)
+    # best_miou = 45.10
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, 
+        T_max=TOTAL_EPOCHS, 
+        last_epoch=START_EPOCH - 1 if START_EPOCH > 1 else -1
+    )
+    if os.path.isfile(RESUME_CHECKPOINT) and 'scheduler' in checkpoint:
+        scheduler.load_state_dict(checkpoint['scheduler'])
+        print("=> Loaded LR Scheduler state.")
     
     print("--- Starting Training ---")
-    for epoch in range(1, TOTAL_EPOCHS + 1):
+    for epoch in range(START_EPOCH, TOTAL_EPOCHS + 1):
         print(f"\nEpoch [{epoch}/{TOTAL_EPOCHS}]")
         
         if epoch == LOSS_SWITCH_EPOCH:
@@ -155,6 +185,23 @@ def main():
                 save_checkpoint(checkpoint, filename=filename)
         else:
             logger.log(epoch, avg_train_loss, "N/A", "N/A", "N/A", None, None)
+
+        latest_checkpoint = {
+            'epoch': epoch, 
+            'state_dict': model.state_dict(), 
+            'optimizer': optimizer.state_dict(),
+            'scheduler': scheduler.state_dict(),
+            'train_loss': avg_train_loss
+        }
+        
+        save_dir = "epochs_200_640_improvedFPN"
+        chkpt_dir = os.path.join(save_dir, "checkpoints")
+        os.makedirs(chkpt_dir, exist_ok=True)
+        
+        # Static name to force OVERWRITE and save hard drive space.
+        # The exact epoch and loss are safely stored inside the dictionary above.
+        latest_filename = os.path.join(chkpt_dir, "latest_training_state.pth.tar")
+        save_checkpoint(latest_checkpoint, filename=latest_filename)
 
 
     torch.cuda.synchronize(device=DEVICE)
