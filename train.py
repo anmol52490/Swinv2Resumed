@@ -116,7 +116,7 @@ def main():
         START_EPOCH = saved_epoch + 1
         
         # Programmatically set best_miou to fix the overwrite flaw
-        best_miou = checkpoint.get('best_miou', 45.11)
+        best_miou = checkpoint.get('best_miou', 45.10)
         
         print(f"=> Loaded checkpoint. Resuming from epoch {START_EPOCH} with previous best mIoU: {best_miou:.2f}")
     else:

@@ -55,7 +55,7 @@ def visualize_prediction(model, dataset_split, image_index, val_transform, devic
 if __name__ == "__main__":
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # checkpoint_path = r"epochs_50_224_manual_arch/models/39.62MIOU_0.34Loss_79.68pixAcc_51.79mAcc_model.pth.tar"
-    checkpoint_path= r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_640_improvedFPN\models\45.11MIOU_1.02Loss_80.93pixAcc_58.21mAcc_model.pth.tar"
+    checkpoint_path= r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_640_improvedFPN\models\45.53MIOU_1.01Loss_81.21pixAcc_59.52mAcc_model.pth.tar"
     
     val_transform = A.Compose([
         A.Resize(height=256, width=256),
@@ -72,4 +72,5 @@ if __name__ == "__main__":
     dataset = load_dataset("EduardoPacheco/FoodSeg103", cache_dir="../FoodSegWithUnet/data/")
 
     idx = random.randint(0, len(dataset['validation']) - 1)
+    print(f"Visualizing validation image #{idx}...")
     visualize_prediction(inference_model, dataset['validation'], idx, val_transform, device)
