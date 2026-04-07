@@ -6,7 +6,6 @@ from PIL import Image
 import torchvision.transforms as transforms
 from datasets import load_dataset
 
-# Import YOUR model architecture
 from model import SwinUperNet
 
 # -----------------------------
@@ -16,11 +15,19 @@ CHECKPOINT_PATH = r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_640_improve
 DATASET_NAME = "EduardoPacheco/FoodSeg103"
 CACHE_DIR = "../FoodSegWithUnet/data/"
 SPLIT_NAME = "validation"
+
 NUM_CLASSES = 104
 BASE_SIZE = (640, 640)
 
-# PIL compatibility for resize interpolation
+# How many original images to process together
+IMAGE_BATCH_SIZE = 2   # try 2, 4, 6, 8 depending on VRAM
+
+# Keep the original TTA behavior for accuracy
+TTA_SCALES = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75]
+TTA_FLIPS = [False, True]
+
 NEAREST = Image.Resampling.NEAREST if hasattr(Image, "Resampling") else Image.NEAREST
+
 
 # -----------------------------
 # Metric Calculation Utilities
@@ -43,49 +50,67 @@ def compute_metrics(hist):
 
     return miou * 100, pixel_acc * 100, macc * 100, iu
 
+
 # -----------------------------
-# TTA Engine
+# Helpers
 # -----------------------------
-def predict_with_tta_batch(model, image_tensor, base_size=(640, 640)):
-    scales = [0.75, 1.0, 1.25]
-    flips = [False, True]
+def to_pil(x):
+    if isinstance(x, Image.Image):
+        return x
+    return Image.fromarray(np.array(x))
 
-    augmented_images = []
+def preprocess_sample(sample, transform):
+    image = to_pil(sample["image"]).convert("RGB")
+    mask = to_pil(sample["label"])
 
-    for scale in scales:
-        for flip in flips:
-            h, w = int(base_size[0] * scale), int(base_size[1] * scale)
+    img_tensor = transform(image)  # (3, 640, 640)
+    mask = mask.resize(BASE_SIZE, NEAREST)
+    mask_np = np.array(mask, dtype=np.int64)
 
-            img = F.interpolate(image_tensor, size=(h, w), mode='bilinear', align_corners=False)
+    return img_tensor, mask_np
+
+
+# -----------------------------
+# TTA Engine for a batch of images
+# -----------------------------
+@torch.inference_mode()
+def predict_with_tta_batch(model, batch_tensor, base_size=BASE_SIZE):
+    """
+    batch_tensor: shape (B, 3, H, W)
+    returns: shape (B, H, W)
+    """
+    B = batch_tensor.shape[0]
+    final_logits = torch.zeros(
+        (B, NUM_CLASSES, base_size[0], base_size[1]),
+        device=batch_tensor.device,
+        dtype=batch_tensor.dtype,
+    )
+
+    total_passes = 0
+
+    for scale in TTA_SCALES:
+        h, w = int(base_size[0] * scale), int(base_size[1] * scale)
+
+        # Scale the whole batch together
+        scaled = F.interpolate(batch_tensor, size=(h, w), mode="bilinear", align_corners=False)
+
+        for flip in TTA_FLIPS:
+            x = torch.flip(scaled, dims=[3]) if flip else scaled
+
+            logits = model(x)
 
             if flip:
-                img = torch.flip(img, dims=[3])
+                logits = torch.flip(logits, dims=[3])
 
-            img = F.interpolate(img, size=base_size, mode='bilinear', align_corners=False)
+            logits = F.interpolate(logits, size=base_size, mode="bilinear", align_corners=False)
 
-            augmented_images.append(img)
+            final_logits += logits
+            total_passes += 1
 
-    batch = torch.cat(augmented_images, dim=0)  # shape: (6, 3, 640, 640)
+    final_logits /= total_passes
+    preds = torch.argmax(final_logits, dim=1)
+    return preds
 
-    with torch.no_grad():
-        logits = model(batch)  # ONE forward pass
-
-    # reverse flips
-    idx = 0
-    restored = []
-
-    for scale in scales:
-        for flip in flips:
-            logit = logits[idx:idx+1]
-            if flip:
-                logit = torch.flip(logit, dims=[3])
-            restored.append(logit)
-            idx += 1
-
-    final_logits = torch.stack(restored).mean(dim=0)
-    final_mask = torch.argmax(final_logits, dim=1)
-
-    return final_mask
 
 # -----------------------------
 # Main Evaluation Loop
@@ -116,43 +141,49 @@ def evaluate_dataset():
 
     model.eval()
 
-    # Must match training preprocessing
     transform = transforms.Compose([
         transforms.Resize(BASE_SIZE),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225])
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
     ])
 
     total_hist = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=np.float64)
 
     print(f"Starting TTA Evaluation on {len(dataset)} validation images...")
+    print(f"Batching {IMAGE_BATCH_SIZE} images at a time.")
 
-    for sample in tqdm(dataset):
-        # Load image
-        image = sample["image"]
-        if not isinstance(image, Image.Image):
-            image = Image.fromarray(np.array(image))
-        image = image.convert("RGB")
-        img_tensor = transform(image).unsqueeze(0).to(DEVICE)
+    for start in tqdm(range(0, len(dataset), IMAGE_BATCH_SIZE)):
+        end = min(start + IMAGE_BATCH_SIZE, len(dataset))
+        samples = [dataset[i] for i in range(start, end)]
 
-        # Load mask
-        mask = sample["label"]
-        if not isinstance(mask, Image.Image):
-            mask = Image.fromarray(np.array(mask))
+        batch_imgs = []
+        batch_masks = []
 
-        mask = mask.resize(BASE_SIZE, NEAREST)
-        mask_np = np.array(mask, dtype=np.int64)
+        for sample in samples:
+            img_tensor, mask_np = preprocess_sample(sample, transform)
+            batch_imgs.append(img_tensor)
+            batch_masks.append(mask_np)
+
+        batch_tensor = torch.stack(batch_imgs, dim=0).to(DEVICE, non_blocking=True)
 
         try:
-            pred_mask = predict_with_tta_batch(model, img_tensor, base_size=BASE_SIZE)
-            pred_mask_np = pred_mask.squeeze(0).cpu().numpy().astype(np.int64)
+            pred_batch = predict_with_tta_batch(model, batch_tensor, base_size=BASE_SIZE)
+            pred_batch_np = pred_batch.cpu().numpy().astype(np.int64)
 
-            total_hist += fast_hist(mask_np.flatten(), pred_mask_np.flatten(), NUM_CLASSES)
+            for i in range(len(samples)):
+                total_hist += fast_hist(
+                    batch_masks[i].flatten(),
+                    pred_batch_np[i].flatten(),
+                    NUM_CLASSES
+                )
 
         except RuntimeError as e:
             if "out of memory" in str(e).lower():
-                print("\nCUDA OOM during TTA. Remove the 1.5 and 1.75 scales.")
+                print("\nCUDA OOM during batched TTA.")
+                print("Lower IMAGE_BATCH_SIZE first. If needed, then reduce TTA_SCALES.")
                 return
             raise e
 
@@ -165,6 +196,7 @@ def evaluate_dataset():
     print(f"Final TTA Pixel Acc:  {pix_acc:.2f}%")
     print(f"Final TTA mAcc:       {macc:.2f}%")
     print("=" * 40)
+
 
 if __name__ == "__main__":
     evaluate_dataset()
