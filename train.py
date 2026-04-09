@@ -12,6 +12,7 @@ import sys
 import os
 import time
 import datetime
+import cv2
 
 from model import SwinUperNet
 from utils import get_loaders, check_accuracy, save_checkpoint, MetricLogger, DiceCELoss, LovaszSoftmaxLoss
@@ -19,12 +20,13 @@ from utils import get_loaders, check_accuracy, save_checkpoint, MetricLogger, Di
 # --- Hyperparameters ---
 LR = 1e-4 # Higher LR because we are training from scratch (Adapters + Decoder)
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-BATCH_SIZE = 6# SwinV2 + UperNet uses heavy VRAM; reduced to 16.
+BATCH_SIZE = 4# SwinV2 + UperNet uses heavy VRAM; reduced to 16.
 TOTAL_EPOCHS = 200
 EVAL_FREQ = 5
 LOSS_SWITCH_EPOCH = int(TOTAL_EPOCHS * 0.85)
 IMG_HEIGHT = 640
 IMG_WIDTH = 640
+IMG_SIZE = 640
 
 def train_fn(loader, model, optimizer, loss_fn):
     loop = tqdm(loader, leave=False, file=sys.stdout, dynamic_ncols=True)
@@ -33,19 +35,23 @@ def train_fn(loader, model, optimizer, loss_fn):
 
     for batch_idx, (data, targets) in enumerate(loop):
         data = data.to(device=DEVICE)
+        data.requires_grad_(True)
         targets = targets.long().to(device=DEVICE)
 
-        
-        predictions = model(data)
-        loss = loss_fn(predictions, targets)
+        # 1. Force the forward pass into memory-saving BF16
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            predictions = model(data)
+            loss = loss_fn(predictions, targets)
 
         optimizer.zero_grad()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        # scaler.scale(loss).backward()
+        
+        # 2. Backward pass works natively (No GradScaler required for BF16!)
         loss.backward()
+        
+        # 3. Clip gradients to ensure stable adapter updates
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
         optimizer.step()
-        # scaler.step(optimizer)
-        # scaler.update()
 
         loss_val = loss.item()
         total_loss += loss_val
@@ -58,23 +64,38 @@ def main():
     script_start_time = time.time()
     
     train_transform = A.Compose([
-        A.Resize(height=IMG_HEIGHT, width=IMG_WIDTH),
-        A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.1),
-        A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.2, rotate_limit=35, p=0.5),
-        A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-        A.HueSaturationValue(hue_shift_limit=20, sat_shift_limit=30, val_shift_limit=20, p=0.5),
-        A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), # ImageNet standards
-        ToTensorV2(),
-    ])
+    A.SmallestMaxSize(max_size=IMG_SIZE, p=1.0),
+    A.RandomScale(scale_limit=(-0.5, 1.0), p=1.0),
+    A.PadIfNeeded(
+        min_height=IMG_SIZE, 
+        min_width=IMG_SIZE, 
+        border_mode=cv2.BORDER_CONSTANT, 
+        fill=[0, 0, 0], 
+        fill_mask=0 
+    ),
+    A.RandomCrop(height=IMG_SIZE, width=IMG_SIZE, p=1.0),
+    A.HorizontalFlip(p=0.5),
+    A.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, hue=0.1, p=0.5),
+    A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ToTensorV2(),
+])
+
 
     val_transform = A.Compose([
-        A.Resize(height=IMG_HEIGHT, width=IMG_WIDTH),
-        A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ToTensorV2(),
-    ])
+    A.SmallestMaxSize(max_size=IMG_SIZE, p=1.0),
+    A.PadIfNeeded(
+        min_height=IMG_SIZE, 
+        min_width=IMG_SIZE, 
+        border_mode=cv2.BORDER_CONSTANT, 
+        fill=[0, 0, 0], 
+        fill_mask=0
+    ),
+    A.CenterCrop(height=IMG_SIZE, width=IMG_SIZE, p=1.0),
+    A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ToTensorV2(),
+])
 
-    save_dir = "epochs_200_640_improvedFPN"
+    save_dir = "epochs_200_Tuna_640"
     os.makedirs(save_dir, exist_ok=True)
 
     batch_loss_file = os.path.join(save_dir, "batch_losses_peft.csv")
@@ -86,6 +107,7 @@ def main():
     model = SwinUperNet(num_classes=104).to(DEVICE)
     # print("=> Compiling Model with torch.compile...")
     # model = torch.compile(model) # Compiles the execution graph for speed
+    model.backbone.gradient_checkpointing_enable()
 
     # Only pass parameters that require gradients to the optimizer
     trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -98,29 +120,6 @@ def main():
     print(f"{(trainable_params1 / total_params) * 100:.2f}% of params are trainable")
     optimizer = optim.AdamW(trainable_params, lr=LR, weight_decay=1e-4)
     # scaler = torch.amp.GradScaler('cuda')
-    RESUME_CHECKPOINT = r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_640_improvedFPN\models\45.11MIOU_1.02Loss_80.93pixAcc_58.21mAcc_model.pth.tar"
-    START_EPOCH = 1
-    best_miou = 0.0
-
-    if os.path.isfile(RESUME_CHECKPOINT):
-        print(f"=> Loading checkpoint '{RESUME_CHECKPOINT}'")
-        checkpoint = torch.load(RESUME_CHECKPOINT, map_location=DEVICE)
-        
-        # Load weights and optimizer
-        model.load_state_dict(checkpoint['state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        
-        # Programmatically set the start epoch. 
-        # (Uses 105 as a fallback if you load an older checkpoint that lacked the 'epoch' key)
-        saved_epoch = checkpoint.get('epoch', 105)
-        START_EPOCH = saved_epoch + 1
-        
-        # Programmatically set best_miou to fix the overwrite flaw
-        best_miou = checkpoint.get('best_miou', 45.10)
-        
-        print(f"=> Loaded checkpoint. Resuming from epoch {START_EPOCH} with previous best mIoU: {best_miou:.2f}")
-    else:
-        print(f"=> No checkpoint found at '{RESUME_CHECKPOINT}'. Starting from scratch.")
 
     if os.path.exists("class_weights.pt"):
         print("=> Loading smoothed Inverse Frequency Class Weights...")
@@ -137,18 +136,11 @@ def main():
     train_loader, val_loader = get_loaders(dataset, BATCH_SIZE, train_transform, val_transform)
 
     logger = MetricLogger(main_file="metrics_peft200.csv", class_file="iou_peft200.csv")
-    # best_miou = 45.10
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, 
-        T_max=TOTAL_EPOCHS, 
-        last_epoch=START_EPOCH - 1 if START_EPOCH > 1 else -1
-    )
-    if os.path.isfile(RESUME_CHECKPOINT) and 'scheduler' in checkpoint:
-        scheduler.load_state_dict(checkpoint['scheduler'])
-        print("=> Loaded LR Scheduler state.")
+    best_miou = 0.0
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=TOTAL_EPOCHS)
     
     print("--- Starting Training ---")
-    for epoch in range(START_EPOCH, TOTAL_EPOCHS + 1):
+    for epoch in range(1, TOTAL_EPOCHS + 1):
         print(f"\nEpoch [{epoch}/{TOTAL_EPOCHS}]")
         
         if epoch == LOSS_SWITCH_EPOCH:
@@ -173,7 +165,7 @@ def main():
             if metrics['miou'] > best_miou:
                 best_miou = metrics['miou']
                 checkpoint = {'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict()}
-                save_dir = "epochs_200_640_improvedFPN"
+                save_dir = "epochs_200_Tuna_640"
                 model_dir = os.path.join(save_dir, "models")
 
                 os.makedirs(model_dir, exist_ok=True)
@@ -193,8 +185,8 @@ def main():
             'scheduler': scheduler.state_dict(),
             'train_loss': avg_train_loss
         }
-        
-        save_dir = "epochs_200_640_improvedFPN"
+
+        save_dir = "epochs_200_Tuna_640"
         chkpt_dir = os.path.join(save_dir, "checkpoints")
         os.makedirs(chkpt_dir, exist_ok=True)
         

@@ -68,7 +68,7 @@ def check_accuracy(loader, model, loss_fn, device='cuda', num_classes=104):
 
 class MetricLogger:
     def __init__(self, main_file="training_metrics_peft200.csv", class_file="per_class_iou_peft200.csv", num_classes=104):
-        save_dir = "epochs_200_640_improvedFPN"
+        save_dir = "epochs_200_Tuna_640"
         os.makedirs(save_dir, exist_ok=True)
         self.main_file = os.path.join(save_dir, main_file)
         self.class_file = os.path.join(save_dir, class_file)
