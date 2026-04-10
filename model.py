@@ -5,7 +5,6 @@ import torch.nn.functional as F
 import numpy as np
 from transformers import Swinv2Backbone
 from transformers import logging
-from torch.utils.checkpoint import checkpoint
 logging.set_verbosity_error()
 
 # ==========================================
@@ -24,7 +23,7 @@ def weights_init(m):
         torch.nn.init.kaiming_uniform_(m.weight, mode='fan_in', nonlinearity='relu')
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
-    elif isinstance(m, nn.BatchNorm2d):
+    elif isinstance(m, nn.GroupNorm):
         nn.init.constant_(m.weight, 1)
         nn.init.constant_(m.bias, 0)
 
@@ -50,7 +49,6 @@ class CleanTunaAdapter(nn.Module):
         self.act = nn.GELU()
         self.dropout = nn.Dropout(p=0.1)
         
-        # Zero-init so network starts mathematically identical to the frozen backbone
         nn.init.constant_(self.up_proj.weight, 0)
         nn.init.constant_(self.up_proj.bias, 0)
 
@@ -76,17 +74,13 @@ class CleanTunaAdapter(nn.Module):
         x = self.dropout(x)
         return x + identity
     
-
-
 # ==========================================
 # 2. The 3-Hook Tripwire Matrix (Residual Scaling)
 # ==========================================
-# Hook 1: Captures initial block input (X) before anything happens
 def block_pre_hook(module, args):
     module._phase_1_identity = args[0]
     module._input_dimensions = args[1]
 
-# Hook 2: Intercepts the tensor entering the MLP (Z_raw = X + Attn_Output)
 def intermediate_pre_hook(module, args):
     parent = module._parent_block
     z_raw = args[0]
@@ -96,7 +90,6 @@ def intermediate_pre_hook(module, args):
     parent._phase_2_identity = z_new
     return (z_new,)
 
-# Hook 3: Intercepts the final output of the block
 def block_post_hook(module, args, output):
     out_raw = output[0]
     z_raw = module._z_raw
@@ -106,66 +99,29 @@ def block_post_hook(module, args, output):
     w_new = (module.tuna_x_scale_2 * w_true) + (module.tuna_scale_2 * m2)
     return (w_new,) + output[1:]
 
-
-
 # ==========================================
 # 3. UperNet Decoding Components
 # ==========================================
-class ConvLayer(nn.Module):
-    def __init__(self, inputfeatures, outputinter, kernel_size=7, stride=1, padding=3, dilation=1, output=64, layertype=1, droupout=False):
-        super(ConvLayer, self).__init__()
-        if not droupout:
-            self.layer1 = nn.Sequential(
-                nn.Conv2d(inputfeatures, outputinter, kernel_size=kernel_size, stride=1, padding=padding, dilation=dilation),
-                nn.BatchNorm2d(outputinter),
-                nn.PReLU(num_parameters=1, init=0.25))
-            self.layer2 = nn.Sequential(
-                nn.Conv2d(outputinter, outputinter, kernel_size=kernel_size, stride=1, padding=padding, dilation=dilation),
-                nn.BatchNorm2d(outputinter),
-                nn.PReLU(num_parameters=1, init=0.25))
-            self.layer3 = nn.Sequential(
-                nn.Conv2d(outputinter, output, kernel_size=kernel_size, stride=1, padding=padding, dilation=dilation),
-                nn.BatchNorm2d(output),
-                nn.PReLU(num_parameters=1, init=0.25))
-        else:
-            self.layer1 = nn.Sequential(
-                nn.Conv2d(inputfeatures, outputinter, kernel_size=kernel_size, stride=1, padding=padding, dilation=dilation),
-                nn.BatchNorm2d(outputinter),
-                nn.Dropout(p=0.30),
-                nn.PReLU(num_parameters=1, init=0.25))
-            self.layer2 = nn.Sequential(
-                nn.Conv2d(outputinter, outputinter, kernel_size=kernel_size, stride=1, padding=padding, dilation=dilation),
-                nn.BatchNorm2d(outputinter),
-                nn.Dropout(p=0.30),
-                nn.PReLU(num_parameters=1, init=0.25))
-            self.layer3 = nn.Sequential(
-                nn.Conv2d(outputinter, output, kernel_size=kernel_size, stride=1, padding=padding, dilation=dilation),
-                nn.BatchNorm2d(output),
-                nn.Dropout(p=0.30),
-                nn.PReLU(num_parameters=1, init=0.25))
-
-        self.layer4 = nn.MaxPool2d(kernel_size=2, stride=2, return_indices=True)
-        self.layer5 = nn.MaxPool2d(kernel_size=2, stride=2, return_indices=False)
-        self.layertype = layertype
+class UperNetHead(nn.Module):
+    """Replaces the redundant ConvLayer block"""
+    def __init__(self, in_channels=512, inter_channels=128, out_channels=64, dropout_p=0.30):
+        super().__init__()
+        self.block = nn.Sequential(
+            # Stage 1 Compression
+            nn.Conv2d(in_channels, inter_channels, kernel_size=3, stride=1, padding=1),
+            nn.GroupNorm(32, inter_channels),
+            nn.Dropout2d(p=dropout_p),
+            nn.PReLU(num_parameters=1, init=0.25),
+            
+            # Stage 2 Compression
+            nn.Conv2d(inter_channels, out_channels, kernel_size=3, stride=1, padding=1),
+            nn.GroupNorm(32, out_channels),
+            nn.Dropout2d(p=dropout_p),
+            nn.PReLU(num_parameters=1, init=0.25)
+        )
 
     def forward(self, x):
-        out1 = self.layer1(x)
-        if self.layertype == 1:
-            out1 = self.layer3(out1)
-            out1, inds = self.layer4(out1)
-            return out1, inds
-        elif self.layertype == 2:
-            out1 = self.layer2(out1)
-            out1 = self.layer3(out1)
-            out1, inds = self.layer4(out1)
-            return out1, inds
-        elif self.layertype == 3:
-            out1 = self.layer3(out1)
-            return out1
-        elif self.layertype == 4:
-            out1 = self.layer3(out1)
-            out1 = self.layer5(out1)
-            return out1
+        return self.block(x)
 
 class ClassifyBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -182,7 +138,7 @@ class PSPhead(nn.Module):
             nn.Sequential(
                 nn.AdaptiveAvgPool2d(pool),
                 nn.Conv2d(input_dim, output_dims, kernel_size=1),
-                nn.BatchNorm2d(output_dims),
+                nn.GroupNorm(32, output_dims),
                 nn.PReLU(num_parameters=1, init=0.25)
             )
             for pool in pool_scales
@@ -190,7 +146,7 @@ class PSPhead(nn.Module):
 
         self.bottleneck = nn.Sequential(
             nn.Conv2d(input_dim + output_dims*len(pool_scales), final_output_dims, kernel_size=3, padding=1),
-            nn.BatchNorm2d(final_output_dims),
+            nn.GroupNorm(32, final_output_dims),
             nn.PReLU(num_parameters=1, init=0.25)
         )
 
@@ -208,38 +164,31 @@ class FPN_fuse(nn.Module):
     def __init__(self, feature_channels=[192, 384, 768, 1536], fpn_out=512):
         super(FPN_fuse, self).__init__()
         
-        # Lateral convolutions applied to ALL stages to ensure feature adaptation
         self.lateral_convs = nn.ModuleList([
             nn.Conv2d(in_ch, fpn_out, kernel_size=1)
             for in_ch in feature_channels
         ])
 
-        # Smoothing convolutions for aliasing reduction
         self.smooth_convs = nn.ModuleList([
             nn.Conv2d(fpn_out, fpn_out, kernel_size=3, padding=1)
             for _ in range(len(feature_channels))
         ])
 
-        # Final Fusion bottlenecks concatenated FPN maps back to standard depth
         self.conv_fusion = nn.Sequential(
             nn.Conv2d(len(feature_channels) * fpn_out, fpn_out, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(fpn_out),
+            nn.GroupNorm(32, fpn_out),
             nn.ReLU(inplace=True)
         )
 
     def forward(self, features):
-        # 1. Uniform lateral projection
         lats = [lateral(f) for lateral, f in zip(self.lateral_convs, features)]
 
-        # 2. Strict Top-Down Summation
         for i in range(len(lats) - 1, 0, -1):
             up = F.interpolate(lats[i], size=lats[i-1].shape[2:], mode='bilinear', align_corners=True)
             lats[i-1] = lats[i-1] + up
 
-        # 3. Anti-aliasing smoothing
         ps = [smooth(l) for smooth, l in zip(self.smooth_convs, lats)]
 
-        # 4. Multi-Scale Aggregation (Targeting Stage 1 resolution)
         target_h, target_w = ps[0].shape[2:]
         fused_ps = [ps[0]]
         for i in range(1, len(ps)):
@@ -262,18 +211,16 @@ class SwinUperNet(nn.Module):
             out_features=["stage1", "stage2", "stage3", "stage4"]
         )
 
-        # Freeze Backbone completely
         for param in self.backbone.parameters():
             param.requires_grad = False
 
-        # Inject TUNA adapters perfectly aligned with Post-Norm architecture
         self._inject_tuna_adapters()
 
         self.feature_channels = [192, 384, 768, 1536]
         self.PPMhead = PSPhead(input_dim=1536, output_dims=384, final_output_dims=1536)
         self.FPN = FPN_fuse(self.feature_channels, fpn_out=512)
         
-        self.head = ConvLayer(512, 128, kernel_size=3, stride=1, padding=1, output=64, layertype=3, droupout=True)
+        self.head = UperNetHead(in_channels=512, inter_channels=128, out_channels=64, dropout_p=0.30)
         self.ClassifyBlock = ClassifyBlock(64, num_classes)
 
         self.PPMhead.apply(weights_init)
@@ -282,7 +229,6 @@ class SwinUperNet(nn.Module):
         self.ClassifyBlock.apply(weights_init)
 
     def _inject_tuna_adapters(self):
-        """Builds the 3-Hook Tripwire Matrix to inject and scale TUNA natively."""
         conv_sizes = [7, 5, 5, 3]
         hidden_dims = [64, 64, 96, 192]
         
@@ -293,23 +239,19 @@ class SwinUperNet(nn.Module):
             for block in stage.blocks:
                 dim = block.layernorm_before.weight.shape[0]
                 
-                # Initialize TUNA Modules
                 block.tuna_1 = CleanTunaAdapter(dim, hidden_dim, conv_size)
                 block.tuna_2 = CleanTunaAdapter(dim, hidden_dim, conv_size)
                 
-                # Initialize Scaling Vectors (X_scale starts at 1.0, TUNA starts at 1e-6)
                 block.tuna_scale_1 = nn.Parameter(torch.ones(dim) * 1e-6)
                 block.tuna_scale_2 = nn.Parameter(torch.ones(dim) * 1e-6)
                 block.tuna_x_scale_1 = nn.Parameter(torch.ones(dim))
                 block.tuna_x_scale_2 = nn.Parameter(torch.ones(dim))
                 
-                # Link the intermediate module back to the block to access TUNA parameters
                 block.intermediate.__dict__['_parent_block'] = block
                 
-                # The 3-Hook Interception Wiring
-                block.register_forward_pre_hook(block_pre_hook)                    # Hook 1: Pre-Block
-                block.intermediate.register_forward_pre_hook(intermediate_pre_hook) # Hook 2: Pre-MLP
-                block.register_forward_hook(block_post_hook)                       # Hook 3: Post-Block
+                block.register_forward_pre_hook(block_pre_hook)
+                block.intermediate.register_forward_pre_hook(intermediate_pre_hook)
+                block.register_forward_hook(block_post_hook)
                 
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         print(f"Injection Complete. Total Trainable Parameters (TUNA + Head): {trainable:,}")
@@ -317,28 +259,12 @@ class SwinUperNet(nn.Module):
     def forward(self, x):
         input_size = (x.size()[2], x.size()[3])
 
-        # Feature extraction via Hugging Face wrapper
         backbone_output = self.backbone(pixel_values=x)
         features = list(backbone_output.feature_maps)
 
-        if self.training:
-            def run_ppm(z):
-                return self.PPMhead(z)
-            
-            def run_fpn(f1, f2, f3, f4):
-                return self.FPN([f1, f2, f3, f4])
-            
-            def run_head(z):
-                return self.head(z)
-            
-            features[-1] = checkpoint(run_ppm, features[-1], use_reentrant=False)
-            x = checkpoint(run_fpn, features[0], features[1], features[2], features[3], use_reentrant=False)
-            x = checkpoint(run_head, x, use_reentrant=False)
-
-        else:
-            features[-1] = self.PPMhead(features[-1])
-            x = self.FPN(features)
-            x = self.head(x)
+        features[-1] = self.PPMhead(features[-1])
+        x = self.FPN(features)
+        x = self.head(x)
         x = F.interpolate(x, size=input_size, mode='bilinear', align_corners=False)
         x = self.ClassifyBlock(x)
 

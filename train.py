@@ -20,41 +20,49 @@ from utils import get_loaders, check_accuracy, save_checkpoint, MetricLogger, Di
 # --- Hyperparameters ---
 LR = 1e-4 # Higher LR because we are training from scratch (Adapters + Decoder)
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-BATCH_SIZE = 4# SwinV2 + UperNet uses heavy VRAM; reduced to 16.
+BATCH_SIZE = 2# SwinV2 + UperNet uses heavy VRAM; reduced to 16.
 TOTAL_EPOCHS = 200
 EVAL_FREQ = 5
 LOSS_SWITCH_EPOCH = int(TOTAL_EPOCHS * 0.85)
 IMG_HEIGHT = 640
 IMG_WIDTH = 640
 IMG_SIZE = 640
+ACCUM_STEPS = 8
 
-def train_fn(loader, model, optimizer, loss_fn):
+def train_fn(loader, model, optimizer, loss_fn, accum_steps):
     model.train()
     loop = tqdm(loader, leave=False, file=sys.stdout, dynamic_ncols=True)
+
     total_loss = 0.0
     batch_losses = []
 
-    for batch_idx, (data, targets) in enumerate(loop):
-        data = data.to(device=DEVICE)
-        # data.requires_grad_(True)
-        targets = targets.long().to(device=DEVICE)
+    # Clear any residual gradients before the epoch begins
+    optimizer.zero_grad(set_to_none=True)
 
-        # 1. Force the forward pass into memory-saving BF16
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+    for step, (data, targets) in enumerate(loop):
+        data = data.to(device=DEVICE, non_blocking=True)
+        targets = targets.long().to(device=DEVICE, non_blocking=True)
+
+        # Execute in BF16 to halve activation VRAM natively
+        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
             predictions = model(data)
             loss = loss_fn(predictions, targets)
+            
+            # Scale the loss to average the accumulated gradients
+            loss = loss / accum_steps
 
-        optimizer.zero_grad()
-        
-        # 2. Backward pass works natively (No GradScaler required for BF16!)
+        # Accumulate gradients into the .grad buffers
         loss.backward()
-        
-        # 3. Clip gradients to ensure stable adapter updates
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
-        optimizer.step()
 
-        loss_val = loss.item()
+        # Execute weight update only when accumulation target is hit, 
+        # or if it is the absolute last batch of the dataset.
+        if (step + 1) % accum_steps == 0 or (step + 1) == len(loader):
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+
+        # Restore the loss to its true scale for accurate CSV logging
+        loss_val = loss.item() * accum_steps 
         total_loss += loss_val
         batch_losses.append(loss_val)
         loop.set_postfix(loss=loss_val)
@@ -108,7 +116,8 @@ def main():
     model = SwinUperNet(num_classes=104).to(DEVICE)
     # print("=> Compiling Model with torch.compile...")
     # model = torch.compile(model) # Compiles the execution graph for speed
-    model.backbone.gradient_checkpointing_enable()
+    # model.backbone.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
+    print(model.backbone.is_gradient_checkpointing)
 
     # Only pass parameters that require gradients to the optimizer
     trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -148,7 +157,7 @@ def main():
             print("=> Phase 2: Switching to LovaszSoftmaxLoss.")
             active_loss_fn = lovasz_loss
 
-        avg_train_loss, current_batch_losses = train_fn(train_loader, model, optimizer, active_loss_fn)
+        avg_train_loss, current_batch_losses = train_fn(train_loader, model, optimizer, active_loss_fn, ACCUM_STEPS)
         print(f"Average Train Loss: {avg_train_loss:.4f}")
 
         with open(batch_loss_file, mode='a', newline='') as f:
