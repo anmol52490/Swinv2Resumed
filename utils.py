@@ -13,10 +13,10 @@ def load_checkpoint(checkpoint, model):
     model.load_state_dict(checkpoint['state_dict'])
 
 def get_loaders(dataset, batch_size, train_transform, val_transform, num_workers=12, pin_memory=True):
-    train_ds = FoodSegDataset(hf_dataset_split=dataset['train'], transform=train_transform)
+    train_ds = FoodSegDataset(hf_dataset_split=dataset['train'], transform=train_transform, is_train=True)
     train_loader = DataLoader(train_ds, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, shuffle=True, persistent_workers=True, prefetch_factor=2)
 
-    val_ds = FoodSegDataset(hf_dataset_split=dataset['validation'], transform=val_transform)
+    val_ds = FoodSegDataset(hf_dataset_split=dataset['validation'], transform=val_transform, is_train=False)
     val_loader = DataLoader(val_ds, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, shuffle=False, persistent_workers=True, prefetch_factor=2)
 
     return train_loader, val_loader

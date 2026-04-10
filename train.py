@@ -117,7 +117,7 @@ def main():
     # print("=> Compiling Model with torch.compile...")
     # model = torch.compile(model) # Compiles the execution graph for speed
     # model.backbone.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
-    print(model.backbone.is_gradient_checkpointing)
+    # print(model.backbone.is_gradient_checkpointing)
 
     # Only pass parameters that require gradients to the optimizer
     trainable_params = [p for p in model.parameters() if p.requires_grad]
