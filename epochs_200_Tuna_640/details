@@ -1,0 +1,9 @@
+(foodseg) D:\swinv2resumed\Swinv2UpernetFoodseg>python train.py
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights: 100%|████████████████████████████████████████████████████████████████████████████████████████████| 469/469 [00:00<00:00, 30938.45it/s]
+Injection Complete. Total Trainable Parameters (TUNA + Head): 8,709,376
+Total trainable params: 74,718,000
+Total params: 269,917,860
+27.68% of params are trainable
+=> Loading smoothed Inverse Frequency Class Weights...
+--- Starting Training ---

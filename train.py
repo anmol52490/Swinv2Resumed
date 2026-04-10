@@ -29,13 +29,14 @@ IMG_WIDTH = 640
 IMG_SIZE = 640
 
 def train_fn(loader, model, optimizer, loss_fn):
+    model.train()
     loop = tqdm(loader, leave=False, file=sys.stdout, dynamic_ncols=True)
-    total_loss = 0
+    total_loss = 0.0
     batch_losses = []
 
     for batch_idx, (data, targets) in enumerate(loop):
         data = data.to(device=DEVICE)
-        data.requires_grad_(True)
+        # data.requires_grad_(True)
         targets = targets.long().to(device=DEVICE)
 
         # 1. Force the forward pass into memory-saving BF16

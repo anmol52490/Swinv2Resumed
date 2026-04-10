@@ -62,7 +62,7 @@ def check_accuracy(loader, model, loss_fn, device='cuda', num_classes=104):
     macc = acc_per_class.mean() * 100
 
     print(f"Val Loss: {avg_val_loss:.4f} |mAcc: {macc:.2f}% | Global Pixel Acc: {pixel_acc:.2f}% | mIoU: {miou:.2f}%")
-    model.train()
+    # model.train()
     
     return {'val_loss': avg_val_loss, 'miou': miou.item(), 'pixel_acc': pixel_acc.item(), 'per_class_iou': iou_per_class.cpu().numpy(), 'mAcc': macc.item()}
 

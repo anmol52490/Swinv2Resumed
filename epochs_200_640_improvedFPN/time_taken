@@ -1,1 +1,12 @@
 ✅ SCRIPT COMPLETE: Total execution time was 1 day, 7:59:34 for 104 epochs: 106-200
+
+
+
+(foodseg) D:\swinv2resumed\Swinv2UpernetFoodseg>python train.py
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 469/469 [00:00<00:00, 25693.28it/s]
+Total trainable params: 66,008,624
+Total params: 261,208,484
+25.27% of params are trainable
+=> Loading smoothed Inverse Frequency Class Weights...
+--- Starting Training ---

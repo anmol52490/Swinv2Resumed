@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 from transformers import Swinv2Backbone
 from transformers import logging
+from torch.utils.checkpoint import checkpoint
 logging.set_verbosity_error()
 
 # ==========================================
@@ -320,10 +321,24 @@ class SwinUperNet(nn.Module):
         backbone_output = self.backbone(pixel_values=x)
         features = list(backbone_output.feature_maps)
 
-        # Context & Decode
-        features[-1] = self.PPMhead(features[-1])
-        x = self.FPN(features)
-        x = self.head(x)
+        if self.training:
+            def run_ppm(z):
+                return self.PPMhead(z)
+            
+            def run_fpn(f1, f2, f3, f4):
+                return self.FPN([f1, f2, f3, f4])
+            
+            def run_head(z):
+                return self.head(z)
+            
+            features[-1] = checkpoint(run_ppm, features[-1], use_reentrant=False)
+            x = checkpoint(run_fpn, features[0], features[1], features[2], features[3], use_reentrant=False)
+            x = checkpoint(run_head, x, use_reentrant=False)
+
+        else:
+            features[-1] = self.PPMhead(features[-1])
+            x = self.FPN(features)
+            x = self.head(x)
         x = F.interpolate(x, size=input_size, mode='bilinear', align_corners=False)
         x = self.ClassifyBlock(x)
 
