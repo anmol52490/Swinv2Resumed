@@ -10,7 +10,7 @@ Total params: 269,917,860
 
 
 
-uses 20gb vram with grad checkpoint on backbone + ppm+ fpn + head abt(40-42 min per epoch )
+uses 20 gb vram with grad checkpoint on backbone + ppm+ fpn + head abt(40-42 min per epoch )
 Epoch [1/200]
  14%|██████████▌                                                                 | 348/2492 [07:25<35:30,  1.01it/s, loss=4.62] 
 
@@ -19,3 +19,9 @@ Epoch [1/200]
 uses 23 gb vram w/o grad checkpoint  and completes training on (27-29 mins per epoch)
  Epoch [1/200]
  30%|████████████████████████                                                       | 759/2492 [10:11<19:47,  1.46it/s, loss=4.24]
+
+
+
+uses 23.2 gb w GN instead of BN on neck and Head vram w/o grad checkpoint  and completes training on (28-29.5 mins per epoch)
+ Epoch [1/200]
+ 33%|█████████████████████████▋                                                     | 812/2492 [10:40<19:15,  1.45it/s, loss=4.09]
