@@ -21,6 +21,8 @@ uses approx 23 gb vram w/o grad checkpoint  and completes training on (27-29 min
  30%|████████████████████████                                                       | 759/2492 [10:11<19:47,  1.46it/s, loss=4.24]
 
 
+ok, i did some optimization with that expandable_segments:True and defragmentation trick watch the changes to exactly see what i mean.
+
 
 uses 23.2 gb w GN instead of BN on neck and Head vram w/o grad checkpoint  and completes training on (28-29.5 mins per epoch)
  Epoch [1/200]

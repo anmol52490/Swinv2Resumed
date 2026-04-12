@@ -1,3 +1,5 @@
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import torch
 # Enable TF32 for extreme speedups on Ampere GPUs (A5000)
 torch.backends.cudnn.allow_tf32 = True
@@ -158,6 +160,22 @@ def main():
         checkpoint = torch.load(resume_path, map_location=DEVICE, weights_only=False)
         
         model.load_state_dict(checkpoint['state_dict'])
+
+        print("=> Pre-allocating contiguous VRAM blocks to prevent fragmentation...")
+        model.train()
+
+
+        dummy_data = torch.randn(BATCH_SIZE, 3, IMG_SIZE, IMG_SIZE, device=DEVICE)
+        dummy_data.requires_grad_(True) # Forces PyTorch to build the full memory graph
+
+        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+            dummy_preds = model(dummy_data)
+            dummy_loss = dummy_preds.sum()
+        dummy_loss.backward()
+
+        optimizer.zero_grad(set_to_none=True)
+        del dummy_data, dummy_preds, dummy_loss
+
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
         start_epoch = checkpoint['epoch'] + 1  # Start at the next epoch
