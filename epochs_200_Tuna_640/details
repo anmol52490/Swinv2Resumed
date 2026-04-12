@@ -25,3 +25,6 @@ uses approx 23 gb vram w/o grad checkpoint  and completes training on (27-29 min
 uses 23.2 gb w GN instead of BN on neck and Head vram w/o grad checkpoint  and completes training on (28-29.5 mins per epoch)
  Epoch [1/200]
  33%|█████████████████████████▋                                                     | 812/2492 [10:40<19:15,  1.45it/s, loss=4.09]
+ In this rate it ran for about 60 epoch and system stopped doing more so 28min* 60 // 60= 28 hr  + 
+ but loading the model and not deleting it was causing it to use shared mem cause 1.5gb was eating up mem space so deleting the checkpoint worked
+ but to some extent it made 29.5gb to 28.1gb that model space was deleted

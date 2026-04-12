@@ -148,9 +148,34 @@ def main():
     logger = MetricLogger(main_file="metrics_peft200.csv", class_file="iou_peft200.csv")
     best_miou = 0.0
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=TOTAL_EPOCHS)
+
+
+    start_epoch = 1
+    resume_path = os.path.join(save_dir, "checkpoints", "latest_training_state.pth.tar")
+    
+    if os.path.isfile(resume_path):
+        print(f"=> Loading checkpoint '{resume_path}'")
+        checkpoint = torch.load(resume_path, map_location=DEVICE, weights_only=False)
+        
+        model.load_state_dict(checkpoint['state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        scheduler.load_state_dict(checkpoint['scheduler'])
+        start_epoch = checkpoint['epoch'] + 1  # Start at the next epoch
+
+        # 3. Destroy the 1.5GB dictionary object immediately
+        del checkpoint
+        
+        # 4. Force Python garbage collection and wipe the CUDA memory cache
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        
+        print(f"=> Successfully resumed from epoch {start_epoch - 1}. Next up: Epoch {start_epoch}")
+    else:
+        print("=> No resume checkpoint found. Starting from scratch.")
     
     print("--- Starting Training ---")
-    for epoch in range(1, TOTAL_EPOCHS + 1):
+    for epoch in range(start_epoch, TOTAL_EPOCHS + 1):
         print(f"\nEpoch [{epoch}/{TOTAL_EPOCHS}]")
         
         if epoch == LOSS_SWITCH_EPOCH:
