@@ -32,3 +32,6 @@ uses 23.2 gb w GN instead of BN on neck and Head vram w/o grad checkpoint  and c
  but to some extent it made 29.5gb to 28.1gb that model space was deleted
 
  again it ran for 86 epoch then again crashed 26 *28 min = 728 min == 12.33 hrs
+
+
+ again it crashed from 87 to 153 epoch it ran 66 epochs * 28 min == 30.8 hr
