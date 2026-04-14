@@ -35,3 +35,5 @@ uses 23.2 gb w GN instead of BN on neck and Head vram w/o grad checkpoint  and c
 
 
  again it crashed from 87 to 153 epoch it ran 66 epochs * 28 min == 30.8 hr
+
+ again it stopped after 165 epochs from 154 epochs 11*28 min = 308 min = 5.13 hr
