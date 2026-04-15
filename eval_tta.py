@@ -11,7 +11,7 @@ from model import SwinUperNet
 # -----------------------------
 # Config
 # -----------------------------
-CHECKPOINT_PATH = r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_640_improvedFPN\models\46.65MIOU_0.14Loss_82.42pixAcc_58.53mAcc_model.pth.tar"
+CHECKPOINT_PATH = r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_Tuna_640\models\47.94MIOU_0.13Loss_80.29pixAcc_57.99mAcc_model.pth.tar"
 DATASET_NAME = "EduardoPacheco/FoodSeg103"
 CACHE_DIR = "../FoodSegWithUnet/data/"
 SPLIT_NAME = "validation"
