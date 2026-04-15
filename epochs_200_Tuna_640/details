@@ -43,3 +43,13 @@ from last 165th epoch to 200 epoch
  ==================================================
 ✅ SCRIPT COMPLETE: Total execution time was 19:11:00
 ==================================================
+
+
+After TTA:
+========================================
+TTA EVALUATION RESULTS
+========================================
+Final TTA mIoU:      48.49%
+Final TTA Pixel Acc:  83.36%
+Final TTA mAcc:       58.14%
+========================================
