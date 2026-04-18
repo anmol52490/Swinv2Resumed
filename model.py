@@ -15,15 +15,11 @@ def weights_init(m):
         torch.nn.init.kaiming_normal_(m.weight, a=0.25, mode='fan_in', nonlinearity='leaky_relu')
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
-    elif isinstance(m, nn.ConvTranspose2d):
-        torch.nn.init.kaiming_uniform_(m.weight, mode='fan_in', nonlinearity='relu')
-        if m.bias is not None:
-            nn.init.constant_(m.bias, 0)
     elif isinstance(m, nn.Linear):
         torch.nn.init.kaiming_uniform_(m.weight, mode='fan_in', nonlinearity='relu')
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
-    elif isinstance(m, nn.GroupNorm):
+    elif isinstance(m, nn.GroupNorm) or isinstance(m, nn.BatchNorm2d):
         nn.init.constant_(m.weight, 1)
         nn.init.constant_(m.bias, 0)
 
@@ -100,109 +96,74 @@ def block_post_hook(module, args, output):
     return (w_new,) + output[1:]
 
 # ==========================================
-# 3. UperNet Decoding Components
+# 3. MMSegmentation-Equivalent FPN Head
 # ==========================================
-class UperNetHead(nn.Module):
-    """Replaces the redundant ConvLayer block"""
-    def __init__(self, in_channels=512, inter_channels=128, out_channels=64, dropout_p=0.30):
+class ConvNormRelu(nn.Module):
+    """Mimics MMSegmentation's ConvModule to wrap Conv2d + Norm + ReLU"""
+    def __init__(self, in_c, out_c, k, p=0):
         super().__init__()
-        self.block = nn.Sequential(
-            # Stage 1 Compression
-            nn.Conv2d(in_channels, inter_channels, kernel_size=3, stride=1, padding=1),
-            nn.GroupNorm(32, inter_channels),
-            nn.Dropout2d(p=dropout_p),
-            nn.PReLU(num_parameters=1, init=0.25),
-            
-            # Stage 2 Compression
-            nn.Conv2d(inter_channels, out_channels, kernel_size=3, stride=1, padding=1),
-            nn.GroupNorm(32, out_channels),
-            nn.Dropout2d(p=dropout_p),
-            nn.PReLU(num_parameters=1, init=0.25)
-        )
-
-    def forward(self, x):
-        return self.block(x)
-
-class ClassifyBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(ClassifyBlock, self).__init__()
-        self.layer = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0)
-
-    def forward(self, x):
-        return self.layer(x)
-
-class PSPhead(nn.Module):
-    def __init__(self, input_dim=1536, output_dims=384, final_output_dims=1536, pool_scales=[1,2,3,6]):
-        super(PSPhead, self).__init__()
-        self.ppm_modules = nn.ModuleList([
-            nn.Sequential(
-                nn.AdaptiveAvgPool2d(pool),
-                nn.Conv2d(input_dim, output_dims, kernel_size=1),
-                nn.GroupNorm(32, output_dims),
-                nn.PReLU(num_parameters=1, init=0.25)
-            )
-            for pool in pool_scales
-        ])
-
-        self.bottleneck = nn.Sequential(
-            nn.Conv2d(input_dim + output_dims*len(pool_scales), final_output_dims, kernel_size=3, padding=1),
-            nn.GroupNorm(32, final_output_dims),
-            nn.PReLU(num_parameters=1, init=0.25)
-        )
-
-    def forward(self, x):
-        ppm_outs = [x]
-        for ppm in self.ppm_modules:
-            ppm_out = F.interpolate(ppm(x), size=(x.shape[2], x.shape[3]), mode='bilinear', align_corners=False)
-            ppm_outs.append(ppm_out)
+        self.conv = nn.Conv2d(in_c, out_c, kernel_size=k, padding=p, bias=False)
+        self.norm = nn.GroupNorm(32, out_c) # Change to nn.BatchNorm2d(out_c) at your own risk
+        self.act = nn.ReLU(inplace=True)
         
-        ppm_outs = torch.cat(ppm_outs, dim=1)
-        x = self.bottleneck(ppm_outs)
-        return x
+    def forward(self, x):
+        return self.act(self.norm(self.conv(x)))
 
-class FPN_fuse(nn.Module):
-    def __init__(self, feature_channels=[192, 384, 768, 1536], fpn_out=512):
-        super(FPN_fuse, self).__init__()
+class FPNHead(nn.Module):
+    """Exact replica of the FPNHead used in the Swin-TUNA codebase."""
+    def __init__(self, in_channels=[192, 384, 768, 1536], channels=512, num_classes=104, dropout_ratio=0.1):
+        super().__init__()
         
+        # 1x1 Convs to unify channel dimensions
         self.lateral_convs = nn.ModuleList([
-            nn.Conv2d(in_ch, fpn_out, kernel_size=1)
-            for in_ch in feature_channels
+            ConvNormRelu(in_c, channels, k=1, p=0) for in_c in in_channels
         ])
-
-        self.smooth_convs = nn.ModuleList([
-            nn.Conv2d(fpn_out, fpn_out, kernel_size=3, padding=1)
-            for _ in range(len(feature_channels))
+        
+        # 3x3 Convs to smooth features after top-down addition
+        self.fpn_convs = nn.ModuleList([
+            ConvNormRelu(channels, channels, k=3, p=1) for _ in in_channels
         ])
-
-        self.conv_fusion = nn.Sequential(
-            nn.Conv2d(len(feature_channels) * fpn_out, fpn_out, kernel_size=3, padding=1, bias=False),
-            nn.GroupNorm(32, fpn_out),
-            nn.ReLU(inplace=True)
-        )
+        
+        # Final Bottleneck mapping concatenated features to head channels
+        self.fpn_bottleneck = ConvNormRelu(len(in_channels) * channels, channels, k=3, p=1)
+        
+        self.dropout = nn.Dropout2d(p=dropout_ratio)
+        self.conv_seg = nn.Conv2d(channels, num_classes, kernel_size=1)
 
     def forward(self, features):
-        lats = [lateral(f) for lateral, f in zip(self.lateral_convs, features)]
-
-        for i in range(len(lats) - 1, 0, -1):
-            up = F.interpolate(lats[i], size=lats[i-1].shape[2:], mode='bilinear', align_corners=True)
-            lats[i-1] = lats[i-1] + up
-
-        ps = [smooth(l) for smooth, l in zip(self.smooth_convs, lats)]
-
-        target_h, target_w = ps[0].shape[2:]
-        fused_ps = [ps[0]]
-        for i in range(1, len(ps)):
-            fused_ps.append(F.interpolate(ps[i], size=(target_h, target_w), mode='bilinear', align_corners=True))
-
-        x = torch.cat(fused_ps, dim=1)
-        return self.conv_fusion(x)
+        # 1. Lateral Projections
+        laterals = [lateral_conv(features[i]) for i, lateral_conv in enumerate(self.lateral_convs)]
+        
+        # 2. Top-Down Fusion
+        for i in range(len(laterals) - 1, 0, -1):
+            prev_shape = laterals[i - 1].shape[2:]
+            laterals[i - 1] = laterals[i - 1] + F.interpolate(
+                laterals[i], size=prev_shape, mode='bilinear', align_corners=False
+            )
+            
+        # 3. Smooth Features
+        fpn_outs = [self.fpn_convs[i](laterals[i]) for i in range(len(laterals))]
+        
+        # 4. Multi-Scale Aggregation (Upsample to highest resolution feature)
+        fused_shape = fpn_outs[0].shape[2:]
+        fused_outs = [fpn_outs[0]]
+        for i in range(1, len(fpn_outs)):
+            fused_outs.append(F.interpolate(fpn_outs[i], size=fused_shape, mode='bilinear', align_corners=False))
+            
+        # 5. Concatenate, Bottleneck, and Classify
+        x = torch.cat(fused_outs, dim=1)
+        x = self.fpn_bottleneck(x)
+        x = self.dropout(x)
+        x = self.conv_seg(x)
+        
+        return x
 
 # ==========================================
-# 4. Integrated SwinUperNet Engine
+# 4. Integrated Swin-TUNA FPN Engine
 # ==========================================
-class SwinUperNet(nn.Module):
+class SwinTunaFPN(nn.Module):
     def __init__(self, num_classes=104):
-        super(SwinUperNet, self).__init__()
+        super().__init__()
 
         model_name = "microsoft/swinv2-large-patch4-window12to24-192to384-22kto1k-ft"
         self.backbone = Swinv2Backbone.from_pretrained(
@@ -216,17 +177,15 @@ class SwinUperNet(nn.Module):
 
         self._inject_tuna_adapters()
 
-        self.feature_channels = [192, 384, 768, 1536]
-        self.PPMhead = PSPhead(input_dim=1536, output_dims=384, final_output_dims=1536)
-        self.FPN = FPN_fuse(self.feature_channels, fpn_out=512)
-        
-        self.head = UperNetHead(in_channels=512, inter_channels=128, out_channels=64, dropout_p=0.30)
-        self.ClassifyBlock = ClassifyBlock(64, num_classes)
+        # The Exact TUNA FPN Configuration
+        self.decode_head = FPNHead(
+            in_channels=[192, 384, 768, 1536], 
+            channels=512, 
+            num_classes=num_classes, 
+            dropout_ratio=0.1
+        )
 
-        self.PPMhead.apply(weights_init)
-        self.FPN.apply(weights_init)
-        self.head.apply(weights_init)
-        self.ClassifyBlock.apply(weights_init)
+        self.decode_head.apply(weights_init)
 
     def _inject_tuna_adapters(self):
         conv_sizes = [7, 5, 5, 3]
@@ -262,10 +221,9 @@ class SwinUperNet(nn.Module):
         backbone_output = self.backbone(pixel_values=x)
         features = list(backbone_output.feature_maps)
 
-        features[-1] = self.PPMhead(features[-1])
-        x = self.FPN(features)
-        x = self.head(x)
-        x = F.interpolate(x, size=input_size, mode='bilinear', align_corners=False)
-        x = self.ClassifyBlock(x)
+        logits = self.decode_head(features)
+        
+        # Final upsample to match input image resolution (640x640)
+        output = F.interpolate(logits, size=input_size, mode='bilinear', align_corners=False)
 
-        return x
+        return output
