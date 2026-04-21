@@ -8,3 +8,8 @@ Total params: 224,320,732
 for 39 epoch it ran  then crashed 29*39 min + 5*7min(for evaluation) then it crashed
 
 39 to 51 again 29*12 +5*3 min
+
+then i forgot to tally another crash
+
+
+and from 96 to 130 epoch it ran - do your math 
