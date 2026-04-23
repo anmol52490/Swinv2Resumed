@@ -4,7 +4,7 @@ import torch
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from datasets import load_dataset
-from model import SwinUperNet
+from model import SwinTunaFPN
 from utils import load_checkpoint
 import random
 
@@ -55,7 +55,7 @@ def visualize_prediction(model, dataset_split, image_index, val_transform, devic
 if __name__ == "__main__":
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # checkpoint_path = r"epochs_50_224_manual_arch/models/39.62MIOU_0.34Loss_79.68pixAcc_51.79mAcc_model.pth.tar"
-    checkpoint_path= r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_Tuna_640\models\47.94MIOU_0.13Loss_80.29pixAcc_57.99mAcc_model.pth.tar"
+    checkpoint_path= r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_TunaFPN_640\models\49.41MIOU_0.14Loss_80.83pixAcc_60.77mAcc_model.pth.tar"
     
     val_transform = A.Compose([
         A.Resize(height=256, width=256),
@@ -63,7 +63,7 @@ if __name__ == "__main__":
         ToTensorV2(),
     ])
 
-    inference_model = SwinUperNet(num_classes=104).to(device)
+    inference_model = SwinTunaFPN(num_classes=104).to(device)
     load_checkpoint(torch.load(checkpoint_path, map_location=device), inference_model)
     # ckpt = torch.load(checkpoint_path, map_location=device)
     # inference_model.load_state_dict(ckpt)
