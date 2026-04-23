@@ -6,12 +6,12 @@ from PIL import Image
 import torchvision.transforms as transforms
 from datasets import load_dataset
 
-from model import SwinUperNet
+from model import SwinTunaFPN
 
 # -----------------------------
 # Config
 # -----------------------------
-CHECKPOINT_PATH = r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_Tuna_640\models\47.94MIOU_0.13Loss_80.29pixAcc_57.99mAcc_model.pth.tar"
+CHECKPOINT_PATH = r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_TunaFPN_640\models\49.41MIOU_0.14Loss_80.83pixAcc_60.77mAcc_model.pth.tar"
 DATASET_NAME = "EduardoPacheco/FoodSeg103"
 CACHE_DIR = "../FoodSegWithUnet/data/"
 SPLIT_NAME = "validation"
@@ -126,7 +126,7 @@ def evaluate_dataset():
     )
 
     print(f"Loading Architecture and Weights into {DEVICE}...")
-    model = SwinUperNet(num_classes=NUM_CLASSES).to(DEVICE)
+    model = SwinTunaFPN(num_classes=NUM_CLASSES).to(DEVICE)
 
     checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE)
     if isinstance(checkpoint, dict):
@@ -188,15 +188,28 @@ def evaluate_dataset():
             raise e
 
     miou, pix_acc, macc, _ = compute_metrics(total_hist)
+    from datetime import datetime
 
-    print("\n" + "=" * 40)
-    print("TTA EVALUATION RESULTS")
-    print("=" * 40)
-    print(f"Final TTA mIoU:      {miou:.2f}%")
-    print(f"Final TTA Pixel Acc:  {pix_acc:.2f}%")
-    print(f"Final TTA mAcc:       {macc:.2f}%")
-    print("=" * 40)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    output_path = r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_TunaFPN_640\details"
 
+    output = (
+        f"\n[{timestamp}]\n"
+        "\n" + "=" * 40 + "\n"
+        "TTA EVALUATION RESULTS\n"
+        + "=" * 40 + "\n"
+        + f"Final TTA mIoU:      {miou:.2f}%\n"
+        + f"Final TTA Pixel Acc:  {pix_acc:.2f}%\n"
+        + f"Final TTA mAcc:       {macc:.2f}%\n"
+        + "=" * 40 + "\n"
+    )
+
+    # print to console
+    print(output)
+
+    # append to file
+    with open(output_path, "a") as f:
+        f.write(output)
 if __name__ == "__main__":
     evaluate_dataset()
