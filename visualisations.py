@@ -11,7 +11,7 @@ class SegmentationVisualizer:
         self.iou_csv = iou_csv
         
         # Output directory for saved plots
-        self.out_dir = r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_Tuna_640\visualizations"
+        self.out_dir = r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_TunaFPN_640\visualizations"
         os.makedirs(self.out_dir, exist_ok=True)
 
     def load_clean_metrics(self):
@@ -175,8 +175,8 @@ class SegmentationVisualizer:
 if __name__ == "__main__":
     # Adjust filenames here if your actual CSVs are named differently
     visualizer = SegmentationVisualizer(
-        metrics_csv=r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_Tuna_640\metrics_peft200.csv",  
-        batch_csv=r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_Tuna_640\batch_losses_peft.csv",
-        iou_csv=r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_Tuna_640\iou_peft200.csv"           
+        metrics_csv=r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_TunaFPN_640\metrics_peft200.csv",  
+        batch_csv=r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_TunaFPN_640\batch_losses_peft.csv",
+        iou_csv=r"D:\swinv2resumed\Swinv2UpernetFoodseg\epochs_200_TunaFPN_640\iou_peft200.csv"           
     )
     visualizer.generate_all()
